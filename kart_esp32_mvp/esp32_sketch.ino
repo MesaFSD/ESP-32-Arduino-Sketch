@@ -34,35 +34,43 @@
 #include <ESP32Servo.h>
 
 // =============================================================================
-//  PIN ASSIGNMENTS — TODO: FILL IN BEFORE FLASHING
+//  PIN ASSIGNMENTS — locked in per kart wiring diagram
 // =============================================================================
-//  Current board labels:
-//    D34  -> Pixhawk throttle PWM input  (confirmed)
-//    D18  -> Brake solenoid signal       (confirmed, active-LOW)
-//    D19  -> Reverse signal to EZkontrol (confirmed)
-//    GPIO 21 -> I2C SDA to MCP4725       (confirmed)
-//    GPIO 22 -> I2C SCL to MCP4725       (confirmed)
-//    RX2 / TX2 -> Pixhawk telemetry      (wired but unused in MVP)
+//  Inputs from Pixhawk Cube:
+//    GPIO34 -> Pixhawk throttle PWM in   (input-only, interrupt capable)
+//    GPIO35 -> Pixhawk steering PWM in   (input-only, interrupt capable)
 //
-//  TO ASSIGN — leave placeholders until hardware is confirmed:
+//  Outputs:
+//    GPIO23 -> Steering PWM out to Talon SRX
+//    GPIO27 -> Brake solenoid relay out  (active-LOW)
+//    GPIO19 -> EZkontrol REV signal      (digital HIGH/LOW)
+//    GPIO18 -> EZkontrol Brake signal    (regen/brake input on EZkontrol; reserved, unused in MVP)
+//
+//  Encoder:
+//    GPIO32 -> REV encoder channel A
+//    GPIO33 -> REV encoder channel B
+//
+//  I2C (MCP4725 DAC):
+//    GPIO21 -> SDA
+//    GPIO22 -> SCL
+//
+//  Telemetry (UART2 to Pixhawk TELEM2 — wired but unused in MVP):
+//    GPIO16 -> Pixhawk TELEM2 TX (ESP32 TX2)
+//    GPIO17 -> Pixhawk TELEM2 RX (ESP32 RX2)
 // -----------------------------------------------------------------------------
 
-// #define PIN_CUBE_STEERING_PWM   XX   // Pixhawk steering PWM input (input-only pin suggested, e.g. GPIO 35)
-// #define PIN_CUBE_THROTTLE_PWM   34   // Pixhawk throttle PWM input (already on D34)
-// #define PIN_STEERING_PWM_OUT    XX   // PWM output to Talon SRX (LEDC-capable pin, e.g. GPIO 25)
-// #define PIN_ENCODER_A           XX   // REV encoder channel A (interrupt-capable, e.g. GPIO 32)
-// #define PIN_ENCODER_B           XX   // REV encoder channel B (interrupt-capable, e.g. GPIO 33)
-// #define PIN_BRAKE_OUT           18   // Brake solenoid signal (confirmed D18, active-LOW)
-// #define PIN_REVERSE_OUT         19   // Reverse signal to EZkontrol (confirmed D19)
+#define PIN_CUBE_STEERING_PWM   35   // Pixhawk steering PWM input
+#define PIN_CUBE_THROTTLE_PWM   34   // Pixhawk throttle PWM input
+#define PIN_STEERING_PWM_OUT    23   // PWM output to Talon SRX
+#define PIN_ENCODER_A           32   // REV encoder channel A
+#define PIN_ENCODER_B           33   // REV encoder channel B
+#define PIN_BRAKE_OUT           27   // Brake solenoid relay (active-LOW)
+#define PIN_REVERSE_OUT         19   // EZkontrol reverse signal
+#define PIN_EZKONTROL_BRAKE     18   // EZkontrol regen/brake signal (reserved, unused in MVP)
 
-// Placeholders so the sketch compiles — REPLACE with real pin numbers before flashing.
-#define PIN_CUBE_STEERING_PWM    0
-#define PIN_CUBE_THROTTLE_PWM   34
-#define PIN_STEERING_PWM_OUT     0
-#define PIN_ENCODER_A            0
-#define PIN_ENCODER_B            0
-#define PIN_BRAKE_OUT           18
-#define PIN_REVERSE_OUT         19
+// I2C pins (passed explicitly to Wire.begin for clarity; ESP32 defaults match):
+#define PIN_I2C_SDA             21
+#define PIN_I2C_SCL             22
 
 // =============================================================================
 //  TUNABLE CONSTANTS — adjust via serial commands or edit and re-flash
@@ -244,10 +252,12 @@ void enterSafeState() {
   // Throttle off
   dac.setVoltage(DAC_ZERO, false);
   currentThrottleDAC = DAC_ZERO;
-  // Brake ON (active-LOW)
+  // Brake ON (active-LOW relay on GPIO27)
   digitalWrite(PIN_BRAKE_OUT, LOW);
   // Reverse OFF
   digitalWrite(PIN_REVERSE_OUT, LOW);
+  // EZkontrol regen/brake signal idle
+  digitalWrite(PIN_EZKONTROL_BRAKE, LOW);
   reverseState = REV_FORWARD;
   // Steering centered
   steeringServo.writeMicroseconds(STEER_PWM_NEUTRAL_US);
@@ -266,13 +276,15 @@ void setup() {
   Serial.println(F("\n[ESP32 Kart Controller] Booting..."));
 
   // --- Configure digital outputs first, so we start in safe state ---
-  pinMode(PIN_BRAKE_OUT,   OUTPUT);
-  pinMode(PIN_REVERSE_OUT, OUTPUT);
-  digitalWrite(PIN_BRAKE_OUT,   LOW);   // brake engaged (active-LOW)
-  digitalWrite(PIN_REVERSE_OUT, LOW);   // reverse off
+  pinMode(PIN_BRAKE_OUT,        OUTPUT);
+  pinMode(PIN_REVERSE_OUT,      OUTPUT);
+  pinMode(PIN_EZKONTROL_BRAKE,  OUTPUT);
+  digitalWrite(PIN_BRAKE_OUT,        LOW);   // brake engaged (active-LOW)
+  digitalWrite(PIN_REVERSE_OUT,      LOW);   // reverse off
+  digitalWrite(PIN_EZKONTROL_BRAKE,  LOW);   // EZkontrol regen/brake idle
 
   // --- Start I2C + DAC ---
-  Wire.begin(21, 22);                   // SDA=21, SCL=22 (ESP32 defaults, explicit for clarity)
+  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   if (!dac.begin(0x60)) {               // 0x60 is the default MCP4725 address; check your module
     Serial.println(F("[ERROR] MCP4725 not found on I2C. Check wiring and address."));
     // Stay in safe state — do not proceed.
